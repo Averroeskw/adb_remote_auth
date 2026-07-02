@@ -68,6 +68,12 @@ fn execute(opts: Opts) -> Result<()> {
             }
         }
         MainCommand::Usb(usb_command) => {
+            // A running ADB server captures connected USB devices, preventing this client
+            // from accessing them directly. Kill it first, if any.
+            if let Err(e) = ADBServer::default().kill_if_running() {
+                log::warn!("error while killing running ADB server: {e}");
+            }
+
             let device = match (usb_command.vendor_id, usb_command.product_id) {
                 (Some(vid), Some(pid)) => match usb_command.path_to_private_key {
                     Some(pk) => ADBUSBDevice::new_with_custom_private_key(
