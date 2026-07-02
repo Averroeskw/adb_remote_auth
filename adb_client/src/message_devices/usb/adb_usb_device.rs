@@ -115,7 +115,11 @@ impl ADBDeviceExt for ADBUSBDevice {
     }
 
     #[inline]
-    fn shell<'a>(&mut self, reader: &mut dyn Read, writer: Box<dyn Write + Send>) -> Result<()> {
+    fn shell<'a>(
+        &mut self,
+        reader: Box<dyn Read + Send>,
+        writer: Box<dyn Write + Send>,
+    ) -> Result<()> {
         self.inner.shell(reader, writer)
     }
 
@@ -184,7 +188,7 @@ impl ADBDeviceExt for ADBUSBDevice {
     fn exec(
         &mut self,
         command: &str,
-        reader: &mut dyn Read,
+        reader: Box<dyn Read + Send>,
         writer: Box<dyn Write + Send>,
     ) -> Result<()> {
         self.inner.exec(command, reader, writer)

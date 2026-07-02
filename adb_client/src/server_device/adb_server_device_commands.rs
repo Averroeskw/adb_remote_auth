@@ -66,7 +66,7 @@ impl ADBDeviceExt for ADBServerDevice {
     fn exec(
         &mut self,
         command: &str,
-        reader: &mut dyn Read,
+        reader: Box<dyn Read + Send>,
         writer: Box<dyn Write + Send>,
     ) -> Result<()> {
         self.bidirectional_session(
@@ -76,7 +76,7 @@ impl ADBDeviceExt for ADBServerDevice {
         )
     }
 
-    fn shell(&mut self, reader: &mut dyn Read, writer: Box<dyn Write + Send>) -> Result<()> {
+    fn shell(&mut self, reader: Box<dyn Read + Send>, writer: Box<dyn Write + Send>) -> Result<()> {
         self.bidirectional_session(&ADBCommand::Local(ADBLocalCommand::Shell), reader, writer)
     }
 
@@ -268,7 +268,7 @@ impl ADBServerDevice {
     fn bidirectional_session(
         &mut self,
         server_cmd: &ADBCommand,
-        mut reader: &mut dyn Read,
+        mut reader: Box<dyn Read + Send>,
         mut writer: Box<dyn Write + Send>,
     ) -> Result<()> {
         // For bidirectional session, we still need shell features
@@ -280,35 +280,38 @@ impl ADBServerDevice {
 
         let mut write_stream = read_stream.try_clone()?;
 
-        // Reading thread, reads response from adb-server
-        std::thread::spawn(move || -> Result<()> {
-            let mut buffer = vec![0; BUFFER_SIZE].into_boxed_slice();
-
-            loop {
-                match read_stream.read(&mut buffer) {
-                    Ok(0) => {
-                        read_stream.shutdown(std::net::Shutdown::Both)?;
-                        return Ok(());
-                    }
-                    Ok(size) => {
-                        writer.write_all(&buffer[..size])?;
-                        writer.flush()?;
-                    }
-                    Err(e) => {
-                        return Err(RustADBError::IOError(e));
-                    }
+        // Writing thread, reads from given reader (that could be stdin e.g), and writes content to server socket.
+        // Deliberately detached: it may stay blocked reading (e.g on stdin) after the session is over,
+        // and will die with the process once this (calling) thread has returned.
+        std::thread::spawn(move || {
+            match std::io::copy(&mut reader, &mut write_stream) {
+                Ok(_) => {
+                    // Reader is exhausted (e.g EOF on piped stdin), close our side of the connection
+                    let _ = write_stream.shutdown(std::net::Shutdown::Write);
                 }
+                Err(e) if e.kind() == ErrorKind::BrokenPipe => (),
+                Err(e) => log::error!("Error while writing to ADB server socket: {e}"),
             }
         });
 
-        // Read from given reader (that could be stdin e.g), and write content to server socket
-        if let Err(e) = std::io::copy(&mut reader, &mut write_stream) {
-            match e.kind() {
-                ErrorKind::BrokenPipe => return Ok(()),
-                _ => return Err(RustADBError::IOError(e)),
+        // Reading loop, reads response from adb-server in the calling thread, so that returning
+        // from this function happens as soon as the connection is closed (EOF).
+        let mut buffer = vec![0; BUFFER_SIZE].into_boxed_slice();
+
+        loop {
+            match read_stream.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = read_stream.shutdown(std::net::Shutdown::Both);
+                    return Ok(());
+                }
+                Ok(size) => {
+                    writer.write_all(&buffer[..size])?;
+                    writer.flush()?;
+                }
+                Err(e) => {
+                    return Err(RustADBError::IOError(e));
+                }
             }
         }
-
-        Ok(())
     }
 }
