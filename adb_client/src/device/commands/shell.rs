@@ -35,8 +35,8 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
     /// Input data is read from [reader] and write to [writer].
     pub(crate) fn shell(
         &mut self,
-        mut reader: &mut dyn Read,
-        mut writer: Box<(dyn Write + Send)>,
+        mut reader: Box<dyn Read + Send>,
+        mut writer: Box<dyn Write + Send>,
     ) -> Result<()> {
         self.open_session(b"shell:\0")?;
 
@@ -45,38 +45,51 @@ impl<T: ADBMessageTransport> ADBMessageDevice<T> {
         let local_id = self.get_local_id()?;
         let remote_id = self.get_remote_id()?;
 
-        // Reading thread, reads response from adbd
-        std::thread::spawn(move || -> Result<()> {
-            loop {
-                let message = transport.read_message()?;
-
-                // Acknowledge for more data
-                let response =
-                    ADBTransportMessage::new(MessageCommand::Okay, local_id, remote_id, &[]);
-                transport.write_message(response)?;
-
-                match message.header().command() {
-                    MessageCommand::Write => {
-                        writer.write_all(&message.into_payload())?;
-                        writer.flush()?;
-                    }
-                    MessageCommand::Okay => continue,
-                    _ => return Err(RustADBError::ADBShellNotSupported),
+        // Writing thread, reads from given reader (that could be stdin e.g), and writes content to device adbd.
+        // Deliberately detached: it may stay blocked reading (e.g on stdin) after the session is over,
+        // and will die with the process once this (calling) thread has returned.
+        let mut write_transport = self.get_transport().clone();
+        std::thread::spawn(move || {
+            let mut shell_writer =
+                ShellMessageWriter::new(write_transport.clone(), local_id, remote_id);
+            match std::io::copy(&mut reader, &mut shell_writer) {
+                Ok(_) => {
+                    // Reader is exhausted (e.g EOF on stdin), close our side of the session.
+                    // Device will answer with a `CLSE` message, terminating the reading loop below.
+                    let message =
+                        ADBTransportMessage::new(MessageCommand::Clse, local_id, remote_id, &[]);
+                    let _ = write_transport.write_message(message);
                 }
+                Err(e) if e.kind() == ErrorKind::BrokenPipe => (),
+                Err(e) => log::error!("Error while writing to device shell: {e}"),
             }
         });
 
-        let transport = self.get_transport().clone();
-        let mut shell_writer = ShellMessageWriter::new(transport, local_id, remote_id);
+        // Reading loop, reads response from adbd in the calling thread, so that returning from
+        // this function happens as soon as the device closes the session (EOF).
+        loop {
+            let message = transport.read_message()?;
 
-        // Read from given reader (that could be stdin e.g), and write content to device adbd
-        if let Err(e) = std::io::copy(&mut reader, &mut shell_writer) {
-            match e.kind() {
-                ErrorKind::BrokenPipe => return Ok(()),
-                _ => return Err(RustADBError::IOError(e)),
+            match message.header().command() {
+                MessageCommand::Write => {
+                    // Acknowledge for more data
+                    let response =
+                        ADBTransportMessage::new(MessageCommand::Okay, local_id, remote_id, &[]);
+                    transport.write_message(response)?;
+
+                    writer.write_all(&message.into_payload())?;
+                    writer.flush()?;
+                }
+                MessageCommand::Okay => continue,
+                MessageCommand::Clse => {
+                    // Device closed the session (EOF), acknowledge and terminate gracefully
+                    let response =
+                        ADBTransportMessage::new(MessageCommand::Clse, local_id, remote_id, &[]);
+                    let _ = transport.write_message(response);
+                    return Ok(());
+                }
+                _ => return Err(RustADBError::ADBShellNotSupported),
             }
         }
-
-        Ok(())
     }
 }

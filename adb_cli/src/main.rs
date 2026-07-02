@@ -125,14 +125,15 @@ fn execute(opts: Opts) -> Result<()> {
                 {
                     let mut adb_termios = adb_termios::ADBTermios::new(std::io::stdin())?;
                     adb_termios.set_adb_termios()?;
-                    let result = device.shell(&mut std::io::stdin(), Box::new(std::io::stdout()));
+                    let result =
+                        device.shell(Box::new(std::io::stdin()), Box::new(std::io::stdout()));
                     adb_termios.restore_adb_termios()?;
                     result?;
                 }
 
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
-                    device.shell(&mut std::io::stdin(), Box::new(std::io::stdout()))?;
+                    device.shell(Box::new(std::io::stdin()), Box::new(std::io::stdout()))?;
                 }
             } else {
                 let commands: Vec<&str> = commands.iter().map(|v| v.as_str()).collect();

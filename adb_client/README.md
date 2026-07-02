@@ -108,5 +108,5 @@ use adb_client::{ADBTcpDevice, ADBDeviceExt};
 let device_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 10));
 let device_port = 43210;
 let mut device = ADBTcpDevice::new(SocketAddr::new(device_ip, device_port)).expect("cannot find device");
-device.shell(&mut std::io::stdin(), Box::new(std::io::stdout()));
+device.shell(Box::new(std::io::stdin()), Box::new(std::io::stdout()));
 ```
