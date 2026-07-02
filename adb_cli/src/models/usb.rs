@@ -23,6 +23,9 @@ pub struct UsbCommand {
     /// URL for remote ADB authentication
     #[clap(short = 'a', long = "remote-auth-url")]
     pub remote_auth_url: Option<String>,
+    /// Kill a running ADB server before opening the device (a running server holds the USB interface)
+    #[clap(long = "kill-server")]
+    pub kill_server: bool,
     #[clap(subcommand)]
     pub commands: DeviceCommands,
 }

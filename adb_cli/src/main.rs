@@ -69,9 +69,17 @@ fn execute(opts: Opts) -> Result<()> {
         }
         MainCommand::Usb(usb_command) => {
             // A running ADB server captures connected USB devices, preventing this client
-            // from accessing them directly. Kill it first, if any.
-            if let Err(e) = ADBServer::default().kill_if_running() {
-                log::warn!("error while killing running ADB server: {e}");
+            // from accessing them directly. Never kill it silently: surface an actionable
+            // error by default, and only kill when explicitly asked to.
+            let mut server = ADBServer::default();
+            if usb_command.kill_server {
+                if let Err(e) = server.kill_if_running() {
+                    log::warn!("error while killing running ADB server: {e}");
+                }
+            } else if server.is_running() {
+                anyhow::bail!(
+                    "a running ADB server is holding USB devices. Stop it with `adb kill-server` or re-run with --kill-server."
+                );
             }
 
             let device = match (usb_command.vendor_id, usb_command.product_id) {
